@@ -137,7 +137,6 @@ class ROSPointRCNN(object):
 
     def pc_cb(self, data):
         pts_input = self.extract_networks_input_from_pc2rosmsg(data)
-        pts_input /= 2
         if self.pc_pub is not None:
             self.pc_pub.publish(numpy2pc2(pts_input, data.header.frame_id))
 

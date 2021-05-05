@@ -55,24 +55,21 @@ class BoundingBoxNode():
         return pts_rect
 
     def roi(self, pts_lidar):
-        x_range, y_range, z_range = [[-15, 15], [-3, 2], [-15, 15]]
+        x_range, y_range, z_range = [[-25, 25], [-3, 2], [-25, 25]]
         pts_x, pts_y, pts_z = pts_lidar[:, 0], pts_lidar[:, 1], pts_lidar[:, 2]
         range_flag = (pts_x >= x_range[0]) & (pts_x <= x_range[1]) \
                      & (pts_y >= y_range[0]) & (pts_y <= y_range[1]) \
                      & (pts_z >= z_range[0]) & (pts_z <= z_range[1])
-        pts_valid_flag = range_flag
-        pts_lidar = pts_lidar[pts_valid_flag, :]
-        np.random.shuffle(pts_lidar)
+        pts_lidar = pts_lidar[range_flag, :]
         return pts_lidar
 
     def extract_data(self, data):
+        random_select = True
 
         pts_lidar = ros_numpy.point_cloud2.pointcloud2_to_xyz_array(data)
         pts_lidar = self.transform(pts_lidar, self.Tr_velo_cam)
         pts_lidar = self.roi(pts_lidar)
-
         mode = 'TEST'
-        random_select = True
         pts_rect = pts_lidar[:, 0:3]
 
         if mode == 'TRAIN' or random_select:
@@ -94,14 +91,22 @@ class BoundingBoxNode():
                 np.random.shuffle(choice)
 
             ret_pts_rect = pts_rect[choice, :]
+            # ret_pts_intensity = pts_intensity[choice] - 0.5  # translate intensity to [-0.5, 0.5]
 
+        # pts_features = [ret_pts_intensity.reshape(-1, 1)]
+        # ret_pts_features = np.concatenate(pts_features, axis=1) if pts_features.__len__() > 1 else pts_features[0]
         if mode == 'TEST':
-            pts_input = ret_pts_rect
+            if cfg.RPN.USE_INTENSITY:
+                # pts_input = np.concatenate((ret_pts_rect, ret_pts_features), axis=1)  # (N, C)
+                pass
+            else:
+                pts_input = ret_pts_rect
 
         return pts_input
 
     def velo_callback(self, data):
         pts_input = self.extract_data(data)
+        print(pts_input.shape)
         pc2 = np.zeros(pts_input.shape[0], dtype=[('x', np.float32), ('y', np.float32), ('z', np.float32)])
         pc2['x'] = pts_input[:, 0]
         pc2['y'] = pts_input[:, 1]
@@ -186,13 +191,58 @@ class BoundingBoxNode():
                     #                                                          1.7)
                     # self.visualize_image_plane(self.cv_image, self.calib, pred_boxes3d_selected, scores_selected,
                     #                            self.img_shape)
-                    # self.visualize_lidar_plane(data, pred_boxes3d_selected.cpu(), scores_selected.cpu())
+                    self.visualize_lidar_plane(data, pred_boxes3d_selected.cpu().numpy())
                     # self.dets_to_tracker(self.calib, pred_boxes3d_selected, scores_selected,
                     #                      self.img_shape)  # used to send to tracker
                     print("Number of detections pr msg: ", pred_boxes3d_selected.shape[0])
                 except TypeError:
                     print("Empty detections")
 
+    def visualize_lidar_plane(self, data, bbox3d):
+        marker_array = MarkerArray()
+        marker = Marker()
+        marker.header.frame_id = data.header.frame_id
+        marker.type = marker.LINE_LIST
+        marker.action = marker.ADD
+        marker.header.stamp = rospy.Time.now()
+
+        # marker scale (scale y and z not used due to being linelist)
+        marker.scale.x = 0.08
+        # marker color
+        marker.color.a = 1.0
+        marker.color.r = 1.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+
+        marker.pose.position.x = 0.0
+        marker.pose.position.y = 0.0
+        marker.pose.position.z = 0.0
+
+        marker.pose.orientation.x = 0.0
+        marker.pose.orientation.y = 0.0
+        marker.pose.orientation.z = 0.0
+        marker.pose.orientation.w = 1.0
+        marker.points = []
+        corner_for_box_list = [0, 1, 0, 3, 2, 3, 2, 1, 4, 5, 4, 7, 6, 7, 6, 5, 3, 7, 0, 4, 1, 5, 2, 6]
+        print(bbox3d.shape)
+        corners3d = kitti_utils.boxes3d_to_corners3d(bbox3d)  # (N,8,3)
+        for box_nr in range(corners3d.shape[0]):  # corners3d.shape[0]
+            box3d_pts_3d_velo = corners3d[box_nr]
+            for corner in corner_for_box_list:
+                p = Point()
+                p.x = box3d_pts_3d_velo[corner, 0]
+                p.y = box3d_pts_3d_velo[corner, 1]
+                p.z = box3d_pts_3d_velo[corner, 2]
+                marker.points.append(p)
+        marker_array.markers.append(marker)
+
+        id = 0
+        for m in marker_array.markers:
+            m.id = id
+            id += 1
+        self.line_strip_pub.publish(marker_array)
+        marker_array.markers = []
+        pass
     def dets_to_tracker(self, calib, bbox3d, scores, img_shape):
         '''
         Sends coordinates as a marker array for the AB3DMOT tracker to use
@@ -255,52 +305,6 @@ class BoundingBoxNode():
         #     colors = get_color()
         #     img2 = kitti_utils.draw_projected_box3d(img2, corners2d, colors[k])
         # self.image_pub.publish(self.bridge.cv2_to_imgmsg(img2, "bgr8"))
-        pass
-
-    def visualize_lidar_plane(self, data, bbox3d, scores):
-        marker_array = MarkerArray()
-        marker = Marker()
-        marker.header.frame_id = data.header.frame_id
-        marker.type = marker.LINE_LIST
-        marker.action = marker.ADD
-        marker.header.stamp = rospy.Time.now()
-
-        # marker scale (scale y and z not used due to being linelist)
-        marker.scale.x = 0.08
-        # marker color
-        marker.color.a = 1.0
-        marker.color.r = 1.0
-        marker.color.g = 1.0
-        marker.color.b = 0.0
-
-        marker.pose.position.x = 0.0
-        marker.pose.position.y = 0.0
-        marker.pose.position.z = 0.0
-
-        marker.pose.orientation.x = 0.0
-        marker.pose.orientation.y = 0.0
-        marker.pose.orientation.z = 0.0
-        marker.pose.orientation.w = 1.0
-        marker.points = []
-        corner_for_box_list = [0, 1, 0, 3, 2, 3, 2, 1, 4, 5, 4, 7, 6, 7, 6, 5, 3, 7, 0, 4, 1, 5, 2, 6]
-        print(bbox3d.shape)
-        corners3d = kitti_utils.boxes3d_to_corners3d(bbox3d)  # (N,8,3)
-        for box_nr in range(corners3d.shape[0]):  # corners3d.shape[0]
-            box3d_pts_3d_velo = corners3d[box_nr]
-            for corner in corner_for_box_list:
-                p = Point()
-                p.x = box3d_pts_3d_velo[corner, 0]
-                p.y = box3d_pts_3d_velo[corner, 1]
-                p.z = box3d_pts_3d_velo[corner, 2]
-                marker.points.append(p)
-        marker_array.markers.append(marker)
-
-        id = 0
-        for m in marker_array.markers:
-            m.id = id
-            id += 1
-        self.line_strip_pub.publish(marker_array)
-        marker_array.markers = []
         pass
 
 
